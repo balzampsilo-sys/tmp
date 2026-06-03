@@ -97,36 +97,36 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def _init_difficulty(rating: Rating) -> float:
-    return _clamp(W[4] - W[5] * (rating - 3), 1.0, 10.0)
+def _init_difficulty(rating: Rating, w: list[float] = W) -> float:
+    return _clamp(w[4] - w[5] * (rating - 3), 1.0, 10.0)
 
 
-def _init_stability(rating: Rating) -> float:
-    return max(W[rating - 1], 0.1)
+def _init_stability(rating: Rating, w: list[float] = W) -> float:
+    return max(w[rating - 1], 0.1)
 
 
-def _next_difficulty(d: float, rating: Rating) -> float:
-    d_prime = d - W[6] * (rating - 3)
-    # mean reversion toward W[4]
-    return _clamp(W[4] * W[7] + (1 - W[7]) * d_prime, 1.0, 10.0)
+def _next_difficulty(d: float, rating: Rating, w: list[float] = W) -> float:
+    d_prime = d - w[6] * (rating - 3)
+    # mean reversion toward w[4]
+    return _clamp(w[4] * w[7] + (1 - w[7]) * d_prime, 1.0, 10.0)
 
 
-def _next_stability_recall(d: float, s: float, r: float, rating: Rating) -> float:
-    hard_penalty = W[15] if rating == Rating.HARD else 1.0
-    easy_bonus   = W[16] if rating == Rating.EASY else 1.0
+def _next_stability_recall(d: float, s: float, r: float, rating: Rating, w: list[float] = W) -> float:
+    hard_penalty = w[15] if rating == Rating.HARD else 1.0
+    easy_bonus   = w[16] if rating == Rating.EASY else 1.0
     return s * (
-        math.exp(W[8] * (11 - d) * s ** (-W[9]) * (math.exp(W[10] * (1 - r)) - 1))
+        math.exp(w[8] * (11 - d) * s ** (-w[9]) * (math.exp(w[10] * (1 - r)) - 1))
         * hard_penalty * easy_bonus
         + 1
     )
 
 
-def _next_stability_forget(d: float, s: float, r: float) -> float:
+def _next_stability_forget(d: float, s: float, r: float, w: list[float] = W) -> float:
     return (
-        W[11]
-        * d ** (-W[12])
-        * ((s + 1) ** W[13] - 1)
-        * math.exp(W[14] * (1 - r))
+        w[11]
+        * d ** (-w[12])
+        * ((s + 1) ** w[13] - 1)
+        * math.exp(w[14] * (1 - r))
     )
 
 
@@ -165,9 +165,11 @@ class FSRS:
             state=card.state,
         )
 
+        w = self.w
+
         if card.state == State.NEW:
-            new_card.stability  = _init_stability(rating)
-            new_card.difficulty = _init_difficulty(rating)
+            new_card.stability  = _init_stability(rating, w)
+            new_card.difficulty = _init_difficulty(rating, w)
 
             if rating == Rating.AGAIN:
                 new_card.state    = State.LEARNING
@@ -194,15 +196,15 @@ class FSRS:
                 new_card.due_date = now + timedelta(days=next_interval(new_card.stability, self.tr))
 
         elif card.state == State.REVIEW:
-            new_card.difficulty = _next_difficulty(card.difficulty, rating)
+            new_card.difficulty = _next_difficulty(card.difficulty, rating, w)
 
             if rating == Rating.AGAIN:
-                new_card.stability = _next_stability_forget(card.difficulty, card.stability, r)
+                new_card.stability = _next_stability_forget(card.difficulty, card.stability, r, w)
                 new_card.lapses   += 1
                 new_card.state     = State.RELEARNING
                 new_card.due_date  = now + timedelta(minutes=RELEARNING_STEPS[0])
             else:
-                new_card.stability = _next_stability_recall(card.difficulty, card.stability, r, rating)
+                new_card.stability = _next_stability_recall(card.difficulty, card.stability, r, rating, w)
                 new_card.reps     += 1
                 new_card.due_date  = now + timedelta(days=next_interval(new_card.stability, self.tr))
 
@@ -210,7 +212,7 @@ class FSRS:
             if rating == Rating.AGAIN:
                 new_card.due_date = now + timedelta(minutes=RELEARNING_STEPS[0])
             else:
-                new_card.stability = _next_stability_recall(card.difficulty, card.stability, r, rating)
+                new_card.stability = _next_stability_recall(card.difficulty, card.stability, r, rating, w)
                 new_card.state     = State.REVIEW
                 new_card.reps     += 1
                 new_card.due_date  = now + timedelta(days=next_interval(new_card.stability, self.tr))

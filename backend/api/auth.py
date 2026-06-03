@@ -16,7 +16,9 @@ from urllib.parse import parse_qsl, unquote
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import base64
+import hashlib
+import hmac as _hmac
 
 from .config import settings
 from .database import get_conn
@@ -52,19 +54,49 @@ def verify_init_data(init_data: str) -> dict:
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
 
+# ── Minimal HS256 JWT (no external crypto deps) ───────────────────────────────
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _b64url_decode(data: str) -> bytes:
+    pad = 4 - len(data) % 4
+    return base64.urlsafe_b64decode(data + "=" * pad)
+
+
 def create_jwt(user_id: str, telegram_id: int) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours)
-    return jwt.encode(
-        {"sub": user_id, "tg": telegram_id, "exp": expire},
-        settings.jwt_secret,
-        algorithm=settings.jwt_algorithm,
+    header  = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    payload = _b64url_encode(json.dumps({
+        "sub": user_id,
+        "tg":  telegram_id,
+        "exp": int(expire.timestamp()),
+    }).encode())
+    msg = f"{header}.{payload}"
+    sig = _b64url_encode(
+        _hmac.new(settings.jwt_secret.encode(), msg.encode(), hashlib.sha256).digest()
     )
+    return f"{msg}.{sig}"
 
 
 def decode_jwt(token: str) -> dict:
     try:
-        return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    except JWTError as e:
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("Malformed token")
+        header, payload, sig = parts
+        msg      = f"{header}.{payload}"
+        expected = _b64url_encode(
+            _hmac.new(settings.jwt_secret.encode(), msg.encode(), hashlib.sha256).digest()
+        )
+        if not _hmac.compare_digest(expected, sig):
+            raise ValueError("Invalid signature")
+        claims = json.loads(_b64url_decode(payload))
+        if claims.get("exp", 0) < datetime.now(timezone.utc).timestamp():
+            raise ValueError("Token expired")
+        return claims
+    except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 
